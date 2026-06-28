@@ -118,31 +118,6 @@ body {
 }
 .modal-hint strong { color: #64748b; }
 
-/* ── BUTTON 2: Fix My Location ── */
-#btn-fix-modal {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  padding: 13px;
-  background: var(--green);
-  color: #fff;
-  border: none;
-  border-radius: 10px;
-  font-size: 15px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: background .15s, transform .1s;
-}
-#btn-fix-modal:hover:not(:disabled)  { background: var(--green-h); }
-#btn-fix-modal:active:not(:disabled) { transform: scale(.97); }
-/* Grayed out while GPS is not ready */
-#btn-fix-modal:disabled {
-  background: #e2e8f0;
-  color: #94a3b8;
-  cursor: not-allowed;
-}
 
 /* Error */
 .modal-error {
