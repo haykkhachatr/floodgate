@@ -3,7 +3,7 @@ import { initializeApp }
 import { getDatabase, ref, push, onValue }
   from 'https://www.gstatic.com/firebasejs/10.12.3/firebase-database.js';
 
-// ── FIREBASE CONFIG ──────────────────────────────────────
+// ── FIREBASE ─────────────────────────────────────────────
 const FIREBASE_CONFIG = {
   apiKey:            'AIzaSyConXdhSHPmoHl-tnEVMRD6eXp2ilnRb1w',
   authDomain:        'floodgate-d63ae.firebaseapp.com',
@@ -13,15 +13,10 @@ const FIREBASE_CONFIG = {
   messagingSenderId: '753742117307',
   appId:             '1:753742117307:web:5e20b9119e22728197ac9e'
 };
-
-// ── FIREBASE INIT ────────────────────────────────────────
 let dbRef = null;
 try {
-  const fbApp = initializeApp(FIREBASE_CONFIG);
-  dbRef = ref(getDatabase(fbApp), 'points');
-} catch (err) {
-  console.error('[Floodgate] Firebase error:', err);
-}
+  dbRef = ref(getDatabase(initializeApp(FIREBASE_CONFIG)), 'points');
+} catch (e) { console.error(e); }
 
 // ── STATE ────────────────────────────────────────────────
 let map          = null;
@@ -36,14 +31,12 @@ let lastCoords   = null;
 
 // ── DOM ──────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
-
 const modal        = $('modal');
 const gpsRow       = $('gps-row');
 const gpsDot       = $('gps-dot');
 const gpsLabel     = $('gps-label');
 const enableWrap   = $('enable-wrap');
 const btnTurnOn    = $('btn-turn-on');
-const btnFixModal  = $('btn-fix-modal');
 const modalError   = $('modal-error');
 const topBadge     = $('top-badge');
 const badgeCount   = $('badge-count');
@@ -74,7 +67,7 @@ function initMap() {
   L.control.zoom({ position: 'topright' }).addTo(map);
 }
 
-// ── USER MARKER ──────────────────────────────────────────
+// ── USER MARKER (blue pulsing dot) ───────────────────────
 const USER_ICON = L.divIcon({
   className: '',
   html: `<div style="width:18px;height:18px;background:#2563eb;border:3px solid white;
@@ -87,7 +80,10 @@ function updateUserMarker(lat, lng, accuracy) {
   const ll = [lat, lng];
   if (!userMarker) {
     userMarker   = L.marker(ll, { icon: USER_ICON, zIndexOffset: 1000 }).addTo(map);
-    accuracyRing = L.circle(ll, { radius: accuracy, color: '#2563eb', fillColor: '#2563eb', fillOpacity: .08, weight: 1 }).addTo(map);
+    accuracyRing = L.circle(ll, {
+      radius: accuracy, color: '#2563eb',
+      fillColor: '#2563eb', fillOpacity: .08, weight: 1
+    }).addTo(map);
   } else {
     userMarker.setLatLng(ll);
     accuracyRing.setLatLng(ll);
@@ -95,7 +91,7 @@ function updateUserMarker(lat, lng, accuracy) {
   }
 }
 
-// ── PIN MARKER ───────────────────────────────────────────
+// ── PIN MARKER (red drop pin) ────────────────────────────
 function makePinIcon() {
   return L.divIcon({
     className: '',
@@ -123,7 +119,7 @@ function addMarkerForPoint(p) {
     `);
 }
 
-// ── LOAD POINTS ──────────────────────────────────────────
+// ── LOAD / SYNC POINTS ───────────────────────────────────
 function loadPoints() {
   if (dbRef) {
     onValue(dbRef, snap => {
@@ -134,9 +130,9 @@ function loadPoints() {
       });
       if (data) {
         Object.entries(data).forEach(([id, p]) => {
-          const point = { ...p, id };
-          points.push(point);
-          addMarkerForPoint(point);
+          const pt = { ...p, id };
+          points.push(pt);
+          addMarkerForPoint(pt);
         });
       }
       badgeCount.textContent = points.length;
@@ -148,156 +144,130 @@ function loadPoints() {
   }
 }
 
+function saveLocally(point) {
+  const p = { ...point, id: `local-${Date.now()}` };
+  points.push(p); addMarkerForPoint(p);
+  badgeCount.textContent = points.length;
+  try {
+    const s = JSON.parse(localStorage.getItem('fg-points') || '[]');
+    s.push(p); localStorage.setItem('fg-points', JSON.stringify(s));
+  } catch (e) {}
+}
+
 // ── GPS ──────────────────────────────────────────────────
 function startGPS() {
   if (gpsStarted) return;
   gpsStarted = true;
 
-  // Hide the "Turn On Location" button, show the searching status
+  // Show searching state in modal
   enableWrap.classList.add('hidden');
   gpsRow.classList.remove('hidden');
   gpsDot.className    = 'dot dot-amber';
   gpsLabel.textContent = 'Finding your location…';
 
-  if (!navigator.geolocation) {
-    showError('Geolocation is not supported by your browser.');
-    return;
-  }
-
-  navigator.geolocation.watchPosition(onPosition, onGeoError, {
-    enableHighAccuracy: true,
-    timeout:            20000,
-    maximumAge:         5000
-  });
+  // Use getCurrentPosition first — it works with "Allow this time" permission
+  // and reliably calls the callback the moment permission is granted.
+  // Then start watchPosition so the blue dot stays live.
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      onPosition(pos);
+      // Now permission is confirmed — start continuous tracking
+      navigator.geolocation.watchPosition(onPosition, () => {}, {
+        enableHighAccuracy: true,
+        timeout: 30000,
+        maximumAge: 5000
+      });
+    },
+    onGeoError,
+    { enableHighAccuracy: true, timeout: 30000, maximumAge: 60000 }
+  );
 }
 
+// ── POSITION CALLBACK ────────────────────────────────────
 function onPosition(pos) {
   currentPos = pos;
   const { latitude: lat, longitude: lng, accuracy } = pos.coords;
 
-  // Update the GPS status line
-  gpsDot.className     = 'dot dot-green';
-  gpsLabel.textContent = `GPS ready · ±${Math.round(accuracy)} m`;
-
   if (!gpsReady) {
     gpsReady = true;
 
-    // Zoom map to the user's real location
+    // Zoom map to user's real location
     map.setView([lat, lng], 16);
 
-    // Activate the Fix My Location button
-    btnFixModal.disabled = false;
+    // Update modal status briefly, then auto-close and show bottom panel
+    gpsDot.className    = 'dot dot-green';
+    gpsLabel.textContent = `Location found · ±${Math.round(accuracy)} m`;
+
+    setTimeout(() => {
+      modal.classList.add('hidden');
+      topBadge.classList.remove('hidden');
+      bottomPanel.classList.remove('hidden');
+    }, 800);
   }
 
   updateUserMarker(lat, lng, accuracy);
 
-  // Keep bottom panel status fresh when visible
+  // Keep bottom panel status updated
   if (!bottomPanel.classList.contains('hidden')) {
     statusDot.className     = 'dot dot-green';
     statusLabel.textContent = `GPS active · ±${Math.round(accuracy)} m`;
   }
 }
 
+// ── GEO ERROR ────────────────────────────────────────────
 function onGeoError(err) {
   const msgs = {
-    1: 'Location access was denied. Please allow it in your browser settings and reload.',
-    2: 'Location could not be determined. Make sure GPS is enabled and try again.',
+    1: 'Location access was denied. Please allow it when asked and try again.',
+    2: 'Could not determine location. Make sure GPS is enabled on your device.',
     3: 'Location request timed out. Please try again.'
   };
-  showError(msgs[err.code] || 'Unknown location error.');
-  // Show Turn On button again so user can retry
+  modalError.textContent = msgs[err.code] || 'Could not get location.';
+  modalError.classList.remove('hidden');
+
+  // Reset so the user can try again
   enableWrap.classList.remove('hidden');
   gpsRow.classList.add('hidden');
-  btnTurnOn.disabled = false;
+  btnTurnOn.disabled    = false;
   btnTurnOn.textContent = 'Try Again';
   gpsStarted = false;
 }
 
-function showError(msg) {
-  modalError.textContent = msg;
-  modalError.classList.remove('hidden');
-}
-
-// ── SAVE POINT ───────────────────────────────────────────
-function saveLocally(point) {
-  const p = { ...point, id: `local-${Date.now()}` };
-  points.push(p);
-  addMarkerForPoint(p);
-  badgeCount.textContent = points.length;
-  try {
-    const s = JSON.parse(localStorage.getItem('fg-points') || '[]');
-    s.push(p);
-    localStorage.setItem('fg-points', JSON.stringify(s));
-  } catch (e) {}
-}
-
-async function savePoint() {
+// ── FIX LOCATION ────────────────────────────────────────
+async function fixLocation() {
   if (!currentPos) return;
+
   const { latitude: lat, longitude: lng, accuracy } = currentPos.coords;
   const now   = new Date();
   const point = { lat, lng, accuracy: Math.round(accuracy), timestamp: now.toISOString() };
 
-  // Update bottom panel result
+  // Show coordinates in bottom panel
   fixResult.classList.remove('hidden');
   resultCoords.textContent = `${lat.toFixed(7)}, ${lng.toFixed(7)}`;
   resultAcc.textContent    = `±${Math.round(accuracy)} m`;
   resultTime.textContent   = now.toLocaleString();
   lastCoords = `${lat.toFixed(7)}, ${lng.toFixed(7)}`;
 
-  if (dbRef) {
-    try { await push(dbRef, point); }
-    catch (e) { saveLocally(point); }
-  } else {
-    saveLocally(point);
-  }
-}
-
-// ── FIX FROM MODAL ───────────────────────────────────────
-async function fixFromModal() {
-  if (!currentPos) return;
-
-  btnFixModal.disabled  = true;
-  btnFixModal.innerHTML = `
-    <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-      <polyline points="20 6 9 17 4 12"/>
-    </svg> Saving…`;
-
-  await savePoint();
-
-  setTimeout(() => {
-    // Close modal
-    modal.classList.add('hidden');
-    // Show top badge and bottom panel
-    topBadge.classList.remove('hidden');
-    bottomPanel.classList.remove('hidden');
-    statusDot.className     = 'dot dot-green';
-    statusLabel.textContent = `GPS active · ±${Math.round(currentPos.coords.accuracy)} m`;
-  }, 500);
-}
-
-// ── FIX FROM BOTTOM PANEL ────────────────────────────────
-async function fixFromPanel() {
-  if (!currentPos) return;
-
-  const orig = btnFix.innerHTML;
+  // Visual feedback on button
+  const origHTML = btnFix.innerHTML;
   btnFix.classList.add('success');
   btnFix.innerHTML = `
     <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
       <polyline points="20 6 9 17 4 12"/>
     </svg> Location Fixed!`;
+  setTimeout(() => { btnFix.classList.remove('success'); btnFix.innerHTML = origHTML; }, 2500);
 
-  await savePoint();
-
-  setTimeout(() => {
-    btnFix.classList.remove('success');
-    btnFix.innerHTML = orig;
-  }, 2500);
+  // Save to Firebase or localStorage
+  if (dbRef) {
+    try { await push(dbRef, point); } catch (e) { saveLocally(point); }
+  } else {
+    saveLocally(point);
+  }
 }
 
 // ── DRAWER ───────────────────────────────────────────────
 function openDrawer() {
   drawerBody.innerHTML = '';
-  if (points.length === 0) {
+  if (!points.length) {
     drawerBody.innerHTML = '<div class="drawer-empty">No points yet.<br>Press <strong>Fix My Location</strong> to add yours.</div>';
   } else {
     [...points].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).forEach(p => {
@@ -317,93 +287,82 @@ function openDrawer() {
   drawer.classList.remove('hidden');
 }
 
-// ── COPY ─────────────────────────────────────────────────
-btnCopy.addEventListener('click', () => {
-  if (!lastCoords) return;
-  const done = () => {
-    btnCopy.textContent = 'Copied!';
-    btnCopy.classList.add('copied');
-    setTimeout(() => { btnCopy.textContent = 'Copy Coordinates'; btnCopy.classList.remove('copied'); }, 2000);
-  };
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(lastCoords).then(done).catch(() => { legacyCopy(lastCoords); done(); });
-  } else { legacyCopy(lastCoords); done(); }
-});
-function legacyCopy(t) {
-  const el = Object.assign(document.createElement('textarea'), { value: t });
-  el.style.cssText = 'position:fixed;top:-9999px';
-  document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el);
-}
-
 // ── EVENTS ───────────────────────────────────────────────
 btnTurnOn.addEventListener('click', () => {
-  if (!navigator.geolocation) { showError('Geolocation not supported by your browser.'); return; }
-  btnTurnOn.disabled  = true;
+  if (!navigator.geolocation) {
+    modalError.textContent = 'Geolocation is not supported by your browser.';
+    modalError.classList.remove('hidden');
+    return;
+  }
+  btnTurnOn.disabled = true;
   btnTurnOn.innerHTML = `
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
          style="animation:spin .9s linear infinite"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
     Finding location…`;
+  modalError.classList.add('hidden');
   startGPS();
 });
 
-btnFixModal.addEventListener('click', fixFromModal);
-btnFix.addEventListener('click',      fixFromPanel);
+btnFix.addEventListener('click', fixLocation);
+
+btnCopy.addEventListener('click', () => {
+  if (!lastCoords) return;
+  const done = () => {
+    btnCopy.textContent = 'Copied!'; btnCopy.classList.add('copied');
+    setTimeout(() => { btnCopy.textContent = 'Copy Coordinates'; btnCopy.classList.remove('copied'); }, 2000);
+  };
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(lastCoords).then(done).catch(() => { legacyCopy(); done(); });
+  } else { legacyCopy(); done(); }
+});
+function legacyCopy() {
+  const el = Object.assign(document.createElement('textarea'), { value: lastCoords });
+  el.style.cssText = 'position:fixed;top:-9999px';
+  document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el);
+}
+
 btnOpenList.addEventListener('click', openDrawer);
-btnClose.addEventListener('click',    () => drawer.classList.add('hidden'));
-$('map').addEventListener('click',    () => drawer.classList.add('hidden'));
+btnClose.addEventListener('click', () => drawer.classList.add('hidden'));
+$('map').addEventListener('click',  () => drawer.classList.add('hidden'));
 
 // ── STARTUP ──────────────────────────────────────────────
 initMap();
 loadPoints();
 
-// Detect whether location is already on — if yes, skip the button entirely.
-// Uses two methods so it works on every browser (Chrome, Firefox, iOS Safari).
+// Auto-detect if location permission is already granted.
+// If yes: skip the button, start GPS immediately.
+// If not: wait for the user to click "Turn On Location".
 (async () => {
   if (!navigator.geolocation) {
-    showError('Geolocation is not supported by your browser.');
-    btnTurnOn.disabled = true;
+    modalError.textContent = 'Geolocation is not supported by your browser.';
+    modalError.classList.remove('hidden');
+    enableWrap.classList.add('hidden');
     return;
   }
 
-  // ── Method 1: Permissions API (Chrome Android, Firefox, iOS 16+) ──────
+  // Method 1: Permissions API (Chrome, Firefox, iOS 16+)
   if (navigator.permissions) {
     try {
       const perm = await navigator.permissions.query({ name: 'geolocation' });
-
-      if (perm.state === 'granted') {
-        // Location is already ON → start immediately, no button needed
-        startGPS();
-        return;
-      }
-
+      if (perm.state === 'granted') { startGPS(); return; }
       if (perm.state === 'denied') {
-        showError('Location is blocked. Please allow it in your browser settings and reload.');
-        btnTurnOn.disabled = true;
+        modalError.textContent = 'Location is blocked. Please allow it in your browser settings and reload.';
+        modalError.classList.remove('hidden');
+        enableWrap.classList.add('hidden');
         return;
       }
-
-      // 'prompt' → keep the "Turn On Location" button visible (default state)
-      // React if the user grants permission through browser settings later
       perm.addEventListener('change', () => {
         if (perm.state === 'granted' && !gpsStarted) startGPS();
-        if (perm.state === 'denied' && !gpsStarted) {
-          showError('Location is blocked. Please allow it in your browser settings and reload.');
-          btnTurnOn.disabled = true;
-        }
       });
-      return; // Wait for button click
-    } catch (e) {
-      // Firefox throws for geolocation — fall through to Method 2
-    }
+      return;
+    } catch (e) { /* Firefox throws — fall through */ }
   }
 
-  // ── Method 2: Silent probe (older iOS Safari, Firefox fallback) ────────
-  // Tries to get a position with a short timeout.
-  // If location was already granted and cached: succeeds instantly → skip button.
-  // If not granted: fails quietly → button stays visible for user to click.
+  // Method 2: Silent probe for older iOS Safari
+  // If location was previously granted, getCurrentPosition succeeds instantly.
   navigator.geolocation.getCurrentPosition(
-    () => startGPS(),  // Worked silently — location was already on
-    () => {},          // Failed — show the "Turn On Location" button (default)
-    { maximumAge: 60000, timeout: 2000, enableHighAccuracy: false }
+    () => { if (!gpsStarted) startGPS(); },
+    () => { /* silently show the Turn On button */ },
+    { maximumAge: 60000, timeout: 1500, enableHighAccuracy: false }
   );
 })();
