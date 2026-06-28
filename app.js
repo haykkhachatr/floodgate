@@ -356,33 +356,54 @@ $('map').addEventListener('click',    () => drawer.classList.add('hidden'));
 initMap();
 loadPoints();
 
-// Check if location permission is already granted → skip "Turn On" step
+// Detect whether location is already on — if yes, skip the button entirely.
+// Uses two methods so it works on every browser (Chrome, Firefox, iOS Safari).
 (async () => {
   if (!navigator.geolocation) {
     showError('Geolocation is not supported by your browser.');
     btnTurnOn.disabled = true;
     return;
   }
-  if (!navigator.permissions) return; // Older browsers: wait for user click
 
-  try {
-    const status = await navigator.permissions.query({ name: 'geolocation' });
-    if (status.state === 'granted') {
-      // Location already on: hide Turn On button, start GPS immediately
-      enableWrap.classList.add('hidden');
-      gpsRow.classList.remove('hidden');
-      startGPS();
-    } else if (status.state === 'denied') {
-      showError('Location is blocked. Please allow it in your browser settings and reload.');
-      btnTurnOn.disabled = true;
-    }
-    status.addEventListener('change', () => {
-      if (status.state === 'granted' && !gpsStarted) {
-        enableWrap.classList.add('hidden');
+  // ── Method 1: Permissions API (Chrome Android, Firefox, iOS 16+) ──────
+  if (navigator.permissions) {
+    try {
+      const perm = await navigator.permissions.query({ name: 'geolocation' });
+
+      if (perm.state === 'granted') {
+        // Location is already ON → start immediately, no button needed
         startGPS();
+        return;
       }
-    });
-  } catch (e) {
-    // Firefox: ignore, wait for user click
+
+      if (perm.state === 'denied') {
+        showError('Location is blocked. Please allow it in your browser settings and reload.');
+        btnTurnOn.disabled = true;
+        return;
+      }
+
+      // 'prompt' → keep the "Turn On Location" button visible (default state)
+      // React if the user grants permission through browser settings later
+      perm.addEventListener('change', () => {
+        if (perm.state === 'granted' && !gpsStarted) startGPS();
+        if (perm.state === 'denied' && !gpsStarted) {
+          showError('Location is blocked. Please allow it in your browser settings and reload.');
+          btnTurnOn.disabled = true;
+        }
+      });
+      return; // Wait for button click
+    } catch (e) {
+      // Firefox throws for geolocation — fall through to Method 2
+    }
   }
+
+  // ── Method 2: Silent probe (older iOS Safari, Firefox fallback) ────────
+  // Tries to get a position with a short timeout.
+  // If location was already granted and cached: succeeds instantly → skip button.
+  // If not granted: fails quietly → button stays visible for user to click.
+  navigator.geolocation.getCurrentPosition(
+    () => startGPS(),  // Worked silently — location was already on
+    () => {},          // Failed — show the "Turn On Location" button (default)
+    { maximumAge: 60000, timeout: 2000, enableHighAccuracy: false }
+  );
 })();
