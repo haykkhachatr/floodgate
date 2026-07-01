@@ -165,21 +165,18 @@ function startGPS() {
   gpsDot.className    = 'dot dot-amber';
   gpsLabel.textContent = 'Finding your location…';
 
-  // Use getCurrentPosition first — it works with "Allow this time" permission
-  // and reliably calls the callback the moment permission is granted.
-  // Then start watchPosition so the blue dot stays live.
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      onPosition(pos);
-      // Now permission is confirmed — start continuous tracking
-      navigator.geolocation.watchPosition(onPosition, () => {}, {
-        enableHighAccuracy: true,
-        timeout: 30000,
-        maximumAge: 5000
-      });
+  // watchPosition with NO timeout option = waits indefinitely.
+  // The 30-second clock was starting before the user even saw the dialog,
+  // causing the "timed out" error on the first tap. With no timeout,
+  // it waits patiently for permission AND for GPS fix — no time limit.
+  navigator.geolocation.watchPosition(
+    onPosition,
+    (err) => {
+      if (err.code === 1) onGeoError(err); // only reset on explicit denial
+      // code 2 (unavailable) → watchPosition retries automatically, stay silent
+      // code 3 (timeout) → cannot happen without a timeout option set
     },
-    onGeoError,
-    { enableHighAccuracy: true, timeout: 30000, maximumAge: 60000 }
+    { enableHighAccuracy: true, maximumAge: 30000 }
   );
 }
 
